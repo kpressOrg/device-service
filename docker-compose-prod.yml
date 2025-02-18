@@ -1,0 +1,50 @@
+services:
+  kpress-rabbitmq:
+    image: rabbitmq:3.13
+    container_name: kpress-rabbitmq
+    ports:
+      - "5552:5552"
+      - "15672:15672"
+      - "5672:5672"
+    environment:
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbitmq_stream advertised_host localhost
+    command: >
+      sh -c "
+        rabbitmq-plugins enable rabbitmq_stream rabbitmq_stream_management &&
+        rabbitmq-server
+      "
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kpress-db-device:
+    image: postgres:latest
+    container_name: kpress-db-device
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: mydb
+    expose:
+      - "5435"
+    ports:
+      - "5435:5435"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myuser -d mydb -p 5435"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: ["postgres", "-c", "port=5435"]
+
+  kpress-app-device-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    ports:
+      - "3034:3034"
+    depends_on:
+      kpress-db-device:
+        condition: service_healthy
+      kpress-rabbitmq:
+        condition: service_healthy
