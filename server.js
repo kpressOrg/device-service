@@ -25,11 +25,12 @@ async function ensureDirectoryExists() {
 // Get the appropriate command based on OS
 function getCaptureCommand(fullPath) {
   console.log(os.platform())
+   const cameraName = "HD Pro Webcam C920"; 
   switch (os.platform()) {
     case "darwin": // macOS
       return `imagesnap -w 1 -v "${fullPath}"` // Uses imagesnap
     case "win32": // Windows
-      return `ffmpeg -f dshow -i video="Integrated Camera" -frames:v 1 "${fullPath}"`
+      return `ffmpeg.exe -f dshow -i video="${cameraName}" -frames:v 1 "${fullPath}"`
     case "linux": // Linux
       return `ffmpeg -f video4linux2 -i /dev/video0 -frames:v 1 "${fullPath}"`
     default:
