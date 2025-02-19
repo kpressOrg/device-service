@@ -6,19 +6,30 @@ const { exec, execSync } = require("child_process")
 const fs = require("fs/promises")
 const util = require("util")
 const os = require("os")
+const cors = require("cors")
+const morgan = require("morgan")
 const path = require("path")
 
 const app = express()
 dotenv.config()
 
-const execPromise = util.promisify(exec)
-const saveDirectory = path.join(__dirname, "photos")
+app.use(express.json())
+app.use(
+  cors({
+    origin: "*",
+  })
+)
+app.use(morgan("dev"))
 
-async function ensureDirectoryExists() {
+const execPromise = util.promisify(exec)
+const photoSaveDirectory = path.join(__dirname, "public/photos")
+const videoSaveDirectory = path.join(__dirname, "public/videos")
+
+async function ensureDirectoryExists(directory) {
   try {
-    await fs.access(saveDirectory)
+    await fs.access(directory)
   } catch (error) {
-    await fs.mkdir(saveDirectory, { recursive: true })
+    await fs.mkdir(directory, { recursive: true })
   }
 }
 
@@ -37,19 +48,14 @@ function getCaptureCommand(fullPath) {
       }
     case "win32": // Windows
       try {
-        const devices = execSync("ffmpeg -list_devices true -f dshow -i dummy").toString()
-        console.log(devices);
-        const match = devices.match(/"([^"]+)"\s+\(video\)/)
-        if (!match) throw new Error("No camera available")
-        cameraName = match[1]
-        return `ffmpeg.exe -f dshow -i video="${cameraName}" -frames:v 1 "${fullPath}"`
+        return `ffmpeg.exe -f dshow -i video="BRIO 4K Stream Edition" -frames:v 1 "${fullPath}"`
       } catch (error) {
         throw new Error("No camera available")
       }
     case "linux": // Linux
       try {
         const devices = execSync("v4l2-ctl --list-devices").toString()
-        console.log(devices);
+        console.log(devices)
         const match = devices.match(/(\/dev\/video\d+)/)
         if (!match) throw new Error("No camera available")
         cameraName = match[1]
@@ -62,9 +68,92 @@ function getCaptureCommand(fullPath) {
   }
 }
 
+function getCaptureVideoCommand(fullPath) {
+  let cameraName = ""
+
+  switch (os.platform()) {
+    case "darwin": // macOS
+      try {
+        cameraName = execSync("imagesnap -l").toString().split("\n")[1].trim()
+        if (!cameraName) throw new Error("No camera available")
+        return `ffmpeg -f avfoundation -framerate 30 -i "${cameraName}" -t 10 "${fullPath}"`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
+    case "win32": // Windows
+      try {
+        return `ffmpeg.exe -f dshow -i video="BRIO 4K Stream Edition" -t 10 "${fullPath}"`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
+    case "linux": // Linux
+      try {
+        const devices = execSync("v4l2-ctl --list-devices").toString()
+        console.log(devices)
+        const match = devices.match(/(\/dev\/video\d+)/)
+        if (!match) throw new Error("No camera available")
+        cameraName = match[1]
+        return `ffmpeg -f video4linux2 -i ${cameraName} -t 10 "${fullPath}"`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
+    default:
+      throw new Error("Unsupported OS")
+  }
+}
+
+function getStreamCommand() {
+  let cameraName = ""
+
+  switch (os.platform()) {
+    case "darwin": // macOS
+      try {
+        cameraName = execSync("imagesnap -l").toString().split("\n")[1].trim()
+        if (!cameraName) throw new Error("No camera available")
+        return `ffmpeg -f avfoundation -framerate 30 -i "${cameraName}" -f mpegts udp://127.0.0.1:12345`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
+    case "win32": // Windows
+      try {
+     return `ffmpeg.exe -f dshow -framerate 30 -i video="BRIO 4K Stream Edition" -vcodec mpeg2video -f mpegts udp://127.0.0.1:12345`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
+    case "linux": // Linux
+      try {
+        const devices = execSync("v4l2-ctl --list-devices").toString()
+        console.log(devices)
+        const match = devices.match(/(\/dev\/video\d+)/)
+        if (!match) throw new Error("No camera available")
+        cameraName = match[1]
+        return `ffmpeg -f video4linux2 -i ${cameraName} -f mpegts udp://127.0.0.1:12345`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
+    default:
+      throw new Error("Unsupported OS")
+  }
+}
+
 async function capturePhoto(fullPath) {
   try {
     const command = getCaptureCommand(fullPath)
+    const { stderr } = await execPromise(command)
+    console.log("Capture logs:", stderr)
+
+    // Verify file existence
+    await fs.access(fullPath)
+    return fullPath
+  } catch (error) {
+    await fs.unlink(fullPath).catch(() => {}) // Cleanup failed attempts
+    throw new Error(`Camera error: ${error.stderr || error.message}`)
+  }
+}
+
+async function captureVideo(fullPath) {
+  try {
+    const command = getCaptureVideoCommand(fullPath)
     const { stderr } = await execPromise(command)
     console.log("Capture logs:", stderr)
 
@@ -162,6 +251,47 @@ connectToDatabase()
               })
           })
 
+          // Capture a video
+          app.get("/video", async (req, res) => {
+            try {
+              const timestamp = Date.now()
+              const start_at = new Date(timestamp)
+          
+              const fileName = `video_${Date.now()}.mp4`
+
+              await ensureDirectoryExists(videoSaveDirectory)
+
+              const fullPath = path.join(videoSaveDirectory, fileName)
+
+              const resultPath = await captureVideo(fullPath)
+              const end_at = new Date(Date.now())
+              const duration = end_at - start_at
+              res.status(200).send(`Video saved to: ${resultPath}, duration: ${duration}ms`)
+            } catch (error) {
+              console.error("Request error:", error)
+              res.status(500).send(error.message)
+            }
+          })
+
+          // Stream video
+          app.get("/stream", (req, res) => {
+            try {
+              const command = getStreamCommand(); // Ensure this command is correct for your environment
+              const stream = exec(command);
+              res.setHeader("Content-Type", "video/mp2t");
+              stream.stdout.pipe(res);
+              stream.stderr.on("data", (data) => {
+                console.error(`stderr: ${data}`);
+              });
+              stream.on("close", (code) => {
+                console.log(`Stream process exited with code ${code}`);
+              });
+            } catch (error) {
+              console.error("Stream error:", error);
+              res.status(500).send(error.message);
+            }
+          });
+
           // Read all devices
           app.get("/all", (req, res) => {
             db.any("SELECT * FROM devices")
@@ -201,14 +331,18 @@ connectToDatabase()
           // Capture a photo
           app.get("/photo", async (req, res) => {
             try {
+              const timestamp = Date.now()
+              const start_at = new Date(timestamp)
               const fileName = `photo_${Date.now()}.jpg`
 
-              await ensureDirectoryExists()
+              await ensureDirectoryExists(photoSaveDirectory)
 
-              const fullPath = path.join(saveDirectory, fileName)
+              const fullPath = path.join(photoSaveDirectory, fileName)
 
               const resultPath = await capturePhoto(fullPath)
-              res.status(200).send(`Photo saved to: ${resultPath}`)
+              const end_at = new Date(Date.now())
+              const duration = end_at - start_at
+              res.status(200).send(`Photo saved to: ${resultPath}, duration: ${duration}ms`)
             } catch (error) {
               console.error("Request error:", error)
               res.status(500).send(error.message)
@@ -226,4 +360,4 @@ connectToDatabase()
   })
   .catch((error) => {
     console.error("Failed to start the server:", error)
-  }) 
+  })
