@@ -2,7 +2,7 @@ const express = require("express")
 const dotenv = require("dotenv")
 const pgp = require("pg-promise")()
 const amqp = require("amqplib/callback_api")
-const { exec } = require("child_process")
+const { exec, execSync } = require("child_process")
 const fs = require("fs/promises")
 const util = require("util")
 const os = require("os")
@@ -24,15 +24,39 @@ async function ensureDirectoryExists() {
 
 // Get the appropriate command based on OS
 function getCaptureCommand(fullPath) {
-  console.log(os.platform())
-   const cameraName = "HD Pro Webcam C920"; 
+  let cameraName = ""
+
   switch (os.platform()) {
     case "darwin": // macOS
-      return `imagesnap -w 1 -v "${fullPath}"` // Uses imagesnap
+      try {
+        cameraName = execSync("imagesnap -l").toString().split("\n")[1].trim()
+        if (!cameraName) throw new Error("No camera available")
+        return `imagesnap -w 1 -v "${fullPath}"`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
     case "win32": // Windows
-      return `ffmpeg.exe -f dshow -i video="${cameraName}" -frames:v 1 "${fullPath}"`
+      try {
+        const devices = execSync("ffmpeg -list_devices true -f dshow -i dummy").toString()
+        console.log(devices);
+        const match = devices.match(/"([^"]+)"\s+\(video\)/)
+        if (!match) throw new Error("No camera available")
+        cameraName = match[1]
+        return `ffmpeg.exe -f dshow -i video="${cameraName}" -frames:v 1 "${fullPath}"`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
     case "linux": // Linux
-      return `ffmpeg -f video4linux2 -i /dev/video0 -frames:v 1 "${fullPath}"`
+      try {
+        const devices = execSync("v4l2-ctl --list-devices").toString()
+        console.log(devices);
+        const match = devices.match(/(\/dev\/video\d+)/)
+        if (!match) throw new Error("No camera available")
+        cameraName = match[1]
+        return `ffmpeg -f video4linux2 -i ${cameraName} -frames:v 1 "${fullPath}"`
+      } catch (error) {
+        throw new Error("No camera available")
+      }
     default:
       throw new Error("Unsupported OS")
   }
@@ -202,4 +226,4 @@ connectToDatabase()
   })
   .catch((error) => {
     console.error("Failed to start the server:", error)
-  })
+  }) 
